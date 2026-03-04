@@ -1,0 +1,184 @@
+domain      = "tech_incident_postmortem"
+description = "Incident Report Generator: takes an incident description, system logs, and team chat to produce a structured postmortem with timeline, root cause analysis, action items, and lessons learned"
+main_pipe   = "generate_postmortem"
+
+# --- Concepts ---
+
+[concept.TimelineEvent]
+description = "A single event in the incident timeline"
+
+[concept.TimelineEvent.structure]
+timestamp = {type = "text", description = "When the event occurred", required = true}
+what_happened = {type = "text", description = "What happened during this event", required = true}
+actor = "Person or system involved"
+affected_system = "Which system was affected"
+impact = {type = "text", description = "Impact classification", required = true, choices = ["triggered_incident", "escalated", "mitigated", "resolved", "informational"]}
+
+[concept.RootCauseAnalysis]
+description = "Root cause analysis using the 5 Whys technique"
+
+[concept.RootCauseAnalysis.structure]
+root_cause = {type = "text", description = "The identified root cause", required = true}
+contributing_factors = {type = "list", item_type = "text", description = "Other contributing factors"}
+detection_method = {type = "text", description = "How the incident was first detected", required = true}
+detection_delay = "Time between incident start and detection"
+category = {type = "text", description = "Root cause category", required = true, choices = ["code_change", "configuration", "infrastructure", "dependency", "capacity", "security", "human_error", "unknown"]}
+
+[concept.ActionItem]
+description = "A follow-up action with owner, priority, and deadline"
+
+[concept.ActionItem.structure]
+action = {type = "text", description = "What needs to be done", required = true}
+owner = {type = "text", description = "Team or person responsible", required = true}
+priority = {type = "text", description = "Priority level", required = true, choices = ["P0", "P1", "P2", "P3"]}
+deadline = "Target completion date"
+category = {type = "text", description = "Type of action", required = true, choices = ["fix", "prevention", "detection", "process", "documentation"]}
+ticket_ref = "Reference to tracking ticket"
+
+[concept.PostmortemReport]
+description = "Complete incident postmortem report"
+
+[concept.PostmortemReport.structure]
+incident_title = {type = "text", description = "Descriptive title of the incident", required = true}
+severity = {type = "text", description = "Incident severity", required = true, choices = ["sev1", "sev2", "sev3", "sev4"]}
+duration = {type = "text", description = "Total incident duration", required = true}
+impact_summary = {type = "text", description = "Summary of user and business impact", required = true}
+timeline = {type = "list", item_type = "concept", item_concept_ref = "tech_incident_postmortem.TimelineEvent", description = "Ordered incident timeline", required = true}
+root_cause_analysis = {type = "concept", concept_ref = "tech_incident_postmortem.RootCauseAnalysis", description = "Root cause analysis", required = true}
+what_went_well = {type = "text", description = "Things that worked well during response", required = true}
+what_went_wrong = {type = "text", description = "Things that failed or could have been better", required = true}
+action_items = {type = "list", item_type = "concept", item_concept_ref = "tech_incident_postmortem.ActionItem", description = "Follow-up actions with owners", required = true}
+lessons_learned = {type = "text", description = "Key takeaways and systemic lessons", required = true}
+
+# --- Pipes ---
+
+[pipe.generate_postmortem]
+type = "PipeSequence"
+description = "Main pipeline: reconstructs timeline, analyzes root cause, generates actions, and compiles the postmortem"
+inputs = {incident_description = "Text", system_logs = "Text", team_chat = "Text"}
+output = "PostmortemReport"
+steps = [
+    {pipe = "reconstruct_timeline", result = "timeline"},
+    {pipe = "analyze_root_cause", result = "root_cause_analysis"},
+    {pipe = "generate_actions", result = "action_items"},
+    {pipe = "compile_postmortem", result = "postmortem"},
+]
+
+[pipe.reconstruct_timeline]
+type = "PipeLLM"
+description = "Extract every significant event from all sources into a chronological timeline"
+inputs = {incident_description = "Text", system_logs = "Text", team_chat = "Text"}
+output = "TimelineEvent[]"
+model = "$engineering-structured"
+prompt = """
+You are an SRE reconstructing an incident timeline from multiple sources.
+
+Incident description:
+@incident_description
+
+System logs:
+@system_logs
+
+Team chat export:
+@team_chat
+
+Extract every significant event and order them chronologically. For each event provide:
+- Precise timestamp (or relative timing if unavailable)
+- What happened (error messages, state changes, alerts, human actions)
+- Who or what was involved (person, service, automated system)
+- Which system was affected
+- Impact classification: triggered_incident (first sign), escalated (got worse), mitigated (partial fix), resolved (fully fixed), or informational (context only)
+
+Be exhaustive. Cross-reference timestamps across all three sources. Include exact error messages and status codes when present.
+"""
+
+[pipe.analyze_root_cause]
+type = "PipeLLM"
+description = "Apply the 5 Whys technique to determine the systemic root cause from the timeline"
+inputs = {timeline = "TimelineEvent[]"}
+output = "RootCauseAnalysis"
+model = "$engineering-structured"
+prompt = """
+You are a senior SRE performing root cause analysis on an incident.
+
+Incident timeline:
+@timeline
+
+Apply the 5 Whys technique to dig to the systemic root cause. Be blameless — focus on systems and processes, not individuals.
+
+Determine:
+1. Root cause: The specific systemic failure that caused the incident
+2. Contributing factors: Other weaknesses that allowed it to happen or made it worse
+3. Detection method: How was the incident first noticed?
+4. Detection delay: How long between the first anomaly and detection?
+5. Category: code_change, configuration, infrastructure, dependency, capacity, security, human_error, or unknown
+
+Tie every conclusion to specific evidence from the timeline. No speculation.
+"""
+
+[pipe.generate_actions]
+type = "PipeLLM"
+description = "Generate prioritized action items covering root cause fix, prevention, detection, and process improvements"
+inputs = {timeline = "TimelineEvent[]", root_cause_analysis = "RootCauseAnalysis"}
+output = "ActionItem[]"
+model = "$engineering-structured"
+prompt = """
+You are a senior engineering manager creating follow-up actions after an incident.
+
+Timeline:
+@timeline
+
+Root cause analysis:
+@root_cause_analysis
+
+Generate concrete, actionable follow-up items. For each:
+- action: Clear, specific task (e.g., "Add circuit breaker to payment service API calls")
+- owner: Appropriate team (e.g., "Platform Team", "SRE Team")
+- priority: P0 (prevent immediate recurrence), P1 (critical improvement), P2 (important but not urgent), P3 (nice to have)
+- deadline: Realistic relative deadline
+- category: fix (root cause), prevention (defense in depth), detection (monitoring/alerting), process (runbooks/escalation), documentation
+
+Ensure actions address:
+1. The direct root cause
+2. Contributing factors
+3. Detection gaps
+4. Process improvements
+
+Aim for 4-8 items. P0 should be rare.
+"""
+
+[pipe.compile_postmortem]
+type = "PipeLLM"
+description = "Compile all analysis into a complete blameless postmortem report"
+inputs = {timeline = "TimelineEvent[]", root_cause_analysis = "RootCauseAnalysis", action_items = "ActionItem[]", incident_description = "Text"}
+output = "PostmortemReport"
+model = "$engineering-structured"
+prompt = """
+You are compiling a final incident postmortem for engineering leadership.
+
+Original incident description:
+@incident_description
+
+Timeline:
+@timeline
+
+Root cause analysis:
+@root_cause_analysis
+
+Action items:
+@action_items
+
+Compile the complete postmortem:
+- incident_title: Clear, descriptive (e.g., "Payment Service Outage — DB Connection Pool Exhaustion")
+- severity: sev1 (critical business impact), sev2 (major), sev3 (moderate), sev4 (minor)
+- duration: Total incident duration
+- impact_summary: User and business impact (affected users, revenue, SLA breaches)
+- timeline: Include all timeline events as provided
+- root_cause_analysis: Include as provided
+- what_went_well: What worked during response (fast detection, effective communication, etc.)
+- what_went_wrong: What failed (slow escalation, missing runbooks, etc.)
+- action_items: Include all as provided
+- lessons_learned: 3-5 systemic takeaways. Blameless, factual, constructive.
+
+Tone: blameless, factual, constructive. This will be shared across engineering.
+"""

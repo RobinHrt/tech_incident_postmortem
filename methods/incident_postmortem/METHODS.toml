@@ -1,11 +1,9 @@
 [package]
 name = "incident_postmortem"
 address = "github.com/RobinHrt/tech_incident_postmortem"
-display_name = "Incident Postmortem Generator"
 version = "1.0.0"
 description = "Incident Report Generator: structured postmortem with timeline, root cause analysis, and action items"
 license = "MIT"
-mthds_version = ">=1.0.0"
 main_pipe = "generate_postmortem"
 
 [exports.tech_incident_postmortem]
